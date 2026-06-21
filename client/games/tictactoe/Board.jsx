@@ -24,7 +24,7 @@ export function TicTacToeBoard({ ctx, G, moves, isActive, waitingMessage = 'Wait
     if (isActive) moves.clickCell(id);
   };
 
-  let status = `Player ${ctx.currentPlayer}'s turn`;
+  let status = 'Your turn';
   let winner = null;
 
   if (ctx.gameover) {

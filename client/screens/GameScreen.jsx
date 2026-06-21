@@ -3,7 +3,7 @@ import { useParams, useLocation, useNavigate } from 'react-router-dom';
 import { Client } from 'boardgame.io/client';
 import { SocketIO } from 'boardgame.io/multiplayer';
 import { ClaudeBot } from '../bot/ClaudeBot';
-import GameTranscript from '../components/GameTranscript';
+import ReasoningPanel from '../components/ReasoningPanel';
 import { GAMES } from '../games/registry';
 
 const SYMBOLS = { '0': 'X', '1': 'O' };
@@ -27,27 +27,17 @@ export default function GameScreen() {
 
   const [config, setConfig] = useState(null);
   const [gameState, setGameState] = useState(null);
-  const [transcript, setTranscript] = useState([]);
+  const [transcript, setTranscript] = useState([]);        // [{ text, player }]
   const [pendingReasoning, setPendingReasoning] = useState(null);
+  const [pendingPlayer, setPendingPlayer] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  // Display client (human's perspective or player 0 for CvC)
   const clientRef = useRef(null);
-  // Claude's client(s) — separate socket.io connections
-  const claudeClientRef = useRef(null);   // hvc: claude's client; cvc: player 0
-  const claudeClient1Ref = useRef(null);  // cvc: player 1
+  const claudeClientRef = useRef(null);
+  const claudeClient1Ref = useRef(null);
   const botRef = useRef(null);
   const bot1Ref = useRef(null);
   const steppingRef = useRef(false);
-
-  const onReasoningChunkRef = useRef(null);
-  onReasoningChunkRef.current = (chunk) => setPendingReasoning((prev) => (prev ?? '') + chunk);
-
-  const onReasoningRef = useRef(null);
-  onReasoningRef.current = (text) => {
-    setTranscript((prev) => [...prev, text]);
-    setPendingReasoning(null);
-  };
 
   const saveMoveRef = useRef(null);
   saveMoveRef.current = (player, moveType, moveArgs, reasoning) =>
@@ -62,15 +52,21 @@ export default function GameScreen() {
     serializeState: gameEntry.serializeState,
     model: cfg.model,
     systemPrompt: cfg.systemPrompt,
-    onReasoningChunk: (chunk) => onReasoningChunkRef.current(chunk),
-    onReasoning: (text) => onReasoningRef.current(text),
+    onReasoningChunk: (chunk) => {
+      setPendingReasoning((prev) => (prev ?? '') + chunk);
+      setPendingPlayer(claudePlayer);
+    },
+    onReasoning: (text) => {
+      setTranscript((prev) => [...prev, { text, player: claudePlayer }]);
+      setPendingReasoning(null);
+      setPendingPlayer(null);
+    },
     onMove: (type, args, reasoning) =>
       saveMoveRef.current(claudePlayer, type, args, reasoning),
   });
 
   const initClients = (cfg, savedTranscript = []) => {
     const gameEntry = GAMES[cfg.gameId];
-
     if (savedTranscript.length > 0) setTranscript(savedTranscript);
 
     if (cfg.mode === 'hvc') {
@@ -111,7 +107,6 @@ export default function GameScreen() {
     const initialize = async () => {
       let cfg = null;
 
-      // Resolve config: location.state is canonical for fresh game; DB is fallback for resume
       if (locationState?.mode) {
         cfg = locationState;
       } else {
@@ -128,8 +123,6 @@ export default function GameScreen() {
             claudeCredentials: g.claude_player === '0' ? g.player0_credentials : g.player1_credentials,
           };
         } else if (g.mode === 'hvh') {
-          // Can't determine which player this browser is without session tracking;
-          // redirect to lobby so they can re-identify
           navigate(`/lobby/${matchID}`);
           return;
         } else if (g.mode === 'cvc') {
@@ -141,7 +134,9 @@ export default function GameScreen() {
             credentials1: g.player1_credentials,
           };
         }
-        const savedTranscript = data.moves.filter((m) => m.reasoning).map((m) => m.reasoning);
+        const savedTranscript = data.moves
+          .filter((m) => m.reasoning)
+          .map((m) => ({ text: m.reasoning, player: m.player }));
         if (cancelled) return;
         setConfig(cfg);
         initClients(cfg, savedTranscript);
@@ -158,7 +153,7 @@ export default function GameScreen() {
     return () => {
       cancelled = true;
       const toStop = new Set([clientRef.current, claudeClientRef.current, claudeClient1Ref.current].filter(Boolean));
-      toStop.forEach(c => c.stop());
+      toStop.forEach((c) => c.stop());
       clientRef.current = null;
       claudeClientRef.current = null;
       claudeClient1Ref.current = null;
@@ -168,7 +163,6 @@ export default function GameScreen() {
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Mark game completed in DB
   useEffect(() => {
     if (!gameState?.ctx?.gameover) return;
     fetch(`/api/games/${matchID}`, {
@@ -178,7 +172,6 @@ export default function GameScreen() {
     }).catch(console.error);
   }, [gameState?.ctx?.gameover, matchID]);
 
-  // Bot stepping
   useEffect(() => {
     if (loading || !gameState || !config) return;
     const { ctx } = gameState;
@@ -187,7 +180,6 @@ export default function GameScreen() {
     if (steppingRef.current) return;
 
     const currentPlayer = ctx.currentPlayer;
-
     let stepClient, stepBot;
 
     if (config.mode === 'hvc') {
@@ -224,10 +216,9 @@ export default function GameScreen() {
     if (ctx.gameover) return false;
     if (config.mode === 'hvc') return ctx.currentPlayer === config.humanPlayer;
     if (config.mode === 'hvh') return ctx.currentPlayer === config.myPlayer;
-    return false; // cvc: no human turn
+    return false;
   };
 
-  // Wrap human moves to persist them (only for hvc and hvh)
   const moves = {};
   if (config.mode !== 'cvc' && clientRef.current?.moves) {
     for (const [name, fn] of Object.entries(clientRef.current.moves)) {
@@ -239,34 +230,67 @@ export default function GameScreen() {
     }
   }
 
-  // Transcript header label
-  const transcriptLabel = config.mode === 'cvc'
-    ? 'Claude A vs Claude B'
-    : `Claude (${SYMBOLS[config.claudePlayer ?? config.myPlayer === '0' ? '1' : '0']})`;
-
-  return (
-    <div style={{ display: 'flex', gap: '3rem', padding: '2rem', fontFamily: 'sans-serif', alignItems: 'flex-start' }}>
-      <div>
-        <Board G={G} ctx={ctx} moves={moves} isActive={isMyTurn()} waitingMessage={config.mode !== 'hvh' ? 'Claude is thinking…' : 'Waiting for opponent…'} />
-        {ctx.gameover && (
-          <div style={{ textAlign: 'center', marginTop: '1rem' }}>
-            <button
-              onClick={() => navigate('/')}
-              style={{ padding: '0.5rem 1.5rem', cursor: 'pointer', fontSize: '0.95rem' }}
-            >
-              Play Again
-            </button>
-          </div>
-        )}
-      </div>
-
-      {config.mode !== 'hvh' && (
-        <GameTranscript
-          transcript={transcript}
-          claudeSymbol={config.mode === 'cvc' ? 'A/B' : SYMBOLS[config.claudePlayer]}
-          pendingReasoning={pendingReasoning}
-        />
+  const boardEl = (
+    <div style={{ flexShrink: 0 }}>
+      <Board
+        G={G} ctx={ctx} moves={moves} isActive={isMyTurn()}
+        waitingMessage={config.mode !== 'hvh' ? 'Claude is thinking…' : 'Waiting for opponent…'}
+      />
+      {ctx.gameover && (
+        <div style={{ textAlign: 'center', marginTop: '1rem' }}>
+          <button
+            onClick={() => navigate('/')}
+            style={{ padding: '0.5rem 1.5rem', cursor: 'pointer', fontSize: '0.95rem' }}
+          >
+            Play Again
+          </button>
+        </div>
       )}
     </div>
   );
+
+  if (config.mode === 'hvh') {
+    return (
+      <div style={{ display: 'flex', justifyContent: 'center', padding: '2rem', fontFamily: 'sans-serif' }}>
+        {boardEl}
+      </div>
+    );
+  }
+
+  if (config.mode === 'hvc') {
+    const claudeEntries = transcript.filter((e) => e.player === config.claudePlayer);
+    const claudePending = pendingPlayer === config.claudePlayer ? pendingReasoning : null;
+    return (
+      <div style={{ display: 'flex', gap: '3rem', padding: '2rem', fontFamily: 'sans-serif', alignItems: 'flex-start', justifyContent: 'center' }}>
+        {boardEl}
+        <div style={{ paddingTop: '2rem' }}>
+          <ReasoningPanel
+            entries={claudeEntries}
+            pending={claudePending}
+            label={`Claude (${SYMBOLS[config.claudePlayer]})`}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  if (config.mode === 'cvc') {
+    const entries0 = transcript.filter((e) => e.player === '0');
+    const entries1 = transcript.filter((e) => e.player === '1');
+    const pending0 = pendingPlayer === '0' ? pendingReasoning : null;
+    const pending1 = pendingPlayer === '1' ? pendingReasoning : null;
+    return (
+      <div style={{ display: 'flex', gap: '2rem', padding: '2rem', fontFamily: 'sans-serif', alignItems: 'flex-start', justifyContent: 'center' }}>
+        <div style={{ paddingTop: '2rem' }}>
+          <ReasoningPanel entries={entries0} pending={pending0} label="Claude A (X)" />
+        </div>
+        {boardEl}
+        <div style={{ paddingTop: '2rem' }}>
+          <ReasoningPanel entries={entries1} pending={pending1} label="Claude B (O)" />
+        </div>
+      </div>
+    );
+  }
+
+  return null;
 }
