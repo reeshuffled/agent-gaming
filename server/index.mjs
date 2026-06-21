@@ -20,6 +20,12 @@ const server = Server({
 if (!isDev) {
   const buildPath = join(__dirname, '..', 'build');
   server.app.use(koaStatic(buildPath));
+  server.app.use(async (ctx) => {
+    if (!ctx.path.startsWith('/api') && !ctx.path.startsWith('/games')) {
+      ctx.type = 'html';
+      ctx.body = require('fs').createReadStream(join(buildPath, 'index.html'));
+    }
+  });
 }
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });

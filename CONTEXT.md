@@ -22,3 +22,15 @@ The configuration screen shown before the board renders. Human selects: which si
 
 ### Server Proxy
 The `POST /api/claude-move` route added to the existing Koa server (`src/server.js`). Receives serialized game state + conversation history from `ClaudeBot`, calls the Anthropic API server-side, returns `{ cell_index, reasoning }`. The Anthropic API key never reaches the browser.
+
+### Game Registry
+A client-side map of all supported games. Each entry provides `{ id, name, game, Board, serializeState }`. `ClaudeBot` is constructed with `enumerate` and `serializeState` from the selected entry. Adding a new game requires only a new registry entry — `ClaudeBot` and the server proxy are unchanged.
+
+### Match
+A single play session between one or more participants (human and/or `ClaudeBot`). Identified by a `matchID` (UUID). Persisted in SQLite with its game type, player configuration, status (in-progress / complete), and timestamps. The `matchID` is the key used in the URL (`/game/:matchID`) and in all DB tables.
+
+### Game Archive
+The DB-backed record of a completed or in-progress match. Stores `board_snapshots` (G + ctx JSON per move, for resume) and `moves` (Claude's reasoning text per turn, for the human reader). Decoupled from what `ClaudeBot` receives on resume — Claude starts from board state only.
+
+### Move History Context
+Recent moves embedded by `serializeState` in the prompt string (e.g. last 3 moves in algebraic notation for chess). This is the mechanism by which `ClaudeBot` receives short-term tactical context on resume — not by replaying `conversationHistory`. Each game's `serializeState` is responsible for including it.
