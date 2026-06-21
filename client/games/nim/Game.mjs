@@ -1,6 +1,7 @@
 import { INVALID_MOVE } from 'boardgame.io/dist/esm/core.js';
 
 export const Nim = {
+  name: 'nim',
   setup: () => ({
     piles: [3, 5, 7],
     lastMove: null,

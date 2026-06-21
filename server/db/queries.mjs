@@ -1,12 +1,27 @@
 import { getDb } from './db.mjs';
 
-export function createGame({ matchId, gameId, humanPlayer, claudePlayer, model, systemPrompt }) {
+export function createGame({ matchId, gameId, mode, humanPlayer, claudePlayer, model, systemPrompt, player0Credentials, player1Credentials }) {
   const db = getDb();
   const now = Date.now();
   db.prepare(`
-    INSERT OR IGNORE INTO games (match_id, game_id, human_player, claude_player, model, system_prompt, status, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, 'in_progress', ?, ?)
-  `).run(matchId, gameId, humanPlayer, claudePlayer, model, systemPrompt, now, now);
+    INSERT OR IGNORE INTO games
+      (match_id, game_id, mode, human_player, claude_player, model, system_prompt,
+       player0_credentials, player1_credentials, status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'in_progress', ?, ?)
+  `).run(matchId, gameId, mode ?? 'hvc', humanPlayer ?? null, claudePlayer ?? null,
+         model ?? null, systemPrompt ?? null,
+         player0Credentials ?? null, player1Credentials ?? null, now, now);
+}
+
+export function updatePlayerCredentials(matchId, player0Credentials, player1Credentials) {
+  const db = getDb();
+  db.prepare(`
+    UPDATE games SET
+      player0_credentials = COALESCE(?, player0_credentials),
+      player1_credentials = COALESCE(?, player1_credentials),
+      updated_at = ?
+    WHERE match_id = ?
+  `).run(player0Credentials ?? null, player1Credentials ?? null, Date.now(), matchId);
 }
 
 export function getGame(matchId) {

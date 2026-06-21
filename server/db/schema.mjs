@@ -4,15 +4,18 @@ export function applySchema(db) {
     PRAGMA foreign_keys = ON;
 
     CREATE TABLE IF NOT EXISTS games (
-      match_id      TEXT PRIMARY KEY,
-      game_id       TEXT NOT NULL,
-      human_player  TEXT NOT NULL,
-      claude_player TEXT NOT NULL,
-      model         TEXT NOT NULL,
-      system_prompt TEXT NOT NULL,
-      status        TEXT NOT NULL DEFAULT 'in_progress',
-      created_at    INTEGER NOT NULL,
-      updated_at    INTEGER NOT NULL
+      match_id             TEXT PRIMARY KEY,
+      game_id              TEXT NOT NULL,
+      mode                 TEXT NOT NULL DEFAULT 'hvc',
+      human_player         TEXT,
+      claude_player        TEXT,
+      model                TEXT,
+      system_prompt        TEXT,
+      player0_credentials  TEXT,
+      player1_credentials  TEXT,
+      status               TEXT NOT NULL DEFAULT 'in_progress',
+      created_at           INTEGER NOT NULL,
+      updated_at           INTEGER NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS game_moves (

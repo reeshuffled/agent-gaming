@@ -1,15 +1,18 @@
 # agent-gaming
 
-Play board games against Claude as a Bot with boardgame.io. 
+Play board games against Claude as a Bot with [boardgame.io](https://github.com/lean-poker/boardgame.io). 
 
-Claude picks moves via the Anthropic API, explains its reasoning, and maintains a per-game conversation history so its thinking evolves across turns.
-
-Currently ships with Tic-Tac-Toe. The architecture is game-agnostic — adding a new game requires a `Game` definition and a `serializeState` function.
+This repo is part framework and part game library.
 
 ## Why?
 
-* Playtest your game
-* Benchmark various strategies or models
+Put simply, to expand the possibilities of work and play with AI agents.
+
+Some examples of activities include:
+* Passing time by playing games
+* (In)formally learning game strategy 
+* Playtesting your game
+* Benchmarking various strategies or models
 
 ## How it works
 
@@ -21,6 +24,8 @@ Browser (React + boardgame.io client)
 ```
 
 `ClaudeBot` is a `boardgame.io` `Bot` subclass. Each turn it serializes the board state, appends to its conversation history, and POSTs to the server proxy. The server calls Claude with a `make_move` tool forced on every turn (`tool_choice: any`), returning a typed `{ cell_index, reasoning }`. The API key never reaches the browser.
+
+Claude picks moves via the Anthropic API, explains its reasoning, and maintains a per-game conversation history so its thinking evolves across turns.
 
 Claude's reasoning for each move accumulates in the Game Transcript sidebar.
 

@@ -10,6 +10,7 @@ export default defineConfig({
     port: 3000,
     proxy: {
       '/api': 'http://localhost:8000',
+      '/games': 'http://localhost:8000',
     },
   },
 });

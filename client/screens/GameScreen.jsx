@@ -1,17 +1,28 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useLocation, useNavigate } from 'react-router-dom';
 import { Client } from 'boardgame.io/client';
-import { Step } from 'boardgame.io/ai';
-import { CreateGameReducer } from 'boardgame.io/internal';
+import { SocketIO } from 'boardgame.io/multiplayer';
 import { ClaudeBot } from '../bot/ClaudeBot';
 import GameTranscript from '../components/GameTranscript';
 import { GAMES } from '../games/registry';
 
 const SYMBOLS = { '0': 'X', '1': 'O' };
+const SERVER = import.meta.env.DEV ? 'http://localhost:8000' : window.location.origin;
+
+function makeClient(game, matchID, playerID, credentials) {
+  return Client({
+    game,
+    matchID,
+    playerID,
+    credentials,
+    multiplayer: SocketIO({ server: SERVER }),
+    debug: false,
+  });
+}
 
 export default function GameScreen() {
   const { matchID } = useParams();
-  const { state: locationConfig } = useLocation();
+  const { state: locationState } = useLocation();
   const navigate = useNavigate();
 
   const [config, setConfig] = useState(null);
@@ -20,8 +31,13 @@ export default function GameScreen() {
   const [pendingReasoning, setPendingReasoning] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  // Display client (human's perspective or player 0 for CvC)
   const clientRef = useRef(null);
+  // Claude's client(s) — separate socket.io connections
+  const claudeClientRef = useRef(null);   // hvc: claude's client; cvc: player 0
+  const claudeClient1Ref = useRef(null);  // cvc: player 1
   const botRef = useRef(null);
+  const bot1Ref = useRef(null);
   const steppingRef = useRef(false);
 
   const onReasoningChunkRef = useRef(null);
@@ -33,7 +49,6 @@ export default function GameScreen() {
     setPendingReasoning(null);
   };
 
-  // Stable ref so save logic always has the current matchID in scope
   const saveMoveRef = useRef(null);
   saveMoveRef.current = (player, moveType, moveArgs, reasoning) =>
     fetch(`/api/games/${matchID}/moves`, {
@@ -42,44 +57,51 @@ export default function GameScreen() {
       body: JSON.stringify({ player, moveType, moveArgs, reasoning: reasoning ?? null }),
     }).catch(console.error);
 
-  const initClient = (cfg, movesToReplay = [], savedTranscript = []) => {
-    const gameEntry = GAMES[cfg.gameId];
-    const client = Client({ game: gameEntry.game, playerID: cfg.humanPlayer, debug: false });
-    client.start();
-    clientRef.current = client;
+  const makeBot = (gameEntry, cfg, claudePlayer) => new ClaudeBot({
+    enumerate: gameEntry.game.ai.enumerate,
+    serializeState: gameEntry.serializeState,
+    model: cfg.model,
+    systemPrompt: cfg.systemPrompt,
+    onReasoningChunk: (chunk) => onReasoningChunkRef.current(chunk),
+    onReasoning: (text) => onReasoningRef.current(text),
+    onMove: (type, args, reasoning) =>
+      saveMoveRef.current(claudePlayer, type, args, reasoning),
+  });
 
-    const bot = new ClaudeBot({
-      enumerate: gameEntry.game.ai.enumerate,
-      serializeState: gameEntry.serializeState,
-      model: cfg.model,
-      systemPrompt: cfg.systemPrompt,
-      onReasoningChunk: (chunk) => onReasoningChunkRef.current(chunk),
-      onReasoning: (text) => onReasoningRef.current(text),
-      onMove: (type, args, reasoning) =>
-        saveMoveRef.current(cfg.claudePlayer, type, args, reasoning),
-    });
-    botRef.current = bot;
+  const initClients = (cfg, savedTranscript = []) => {
+    const gameEntry = GAMES[cfg.gameId];
 
     if (savedTranscript.length > 0) setTranscript(savedTranscript);
 
-    // Compute final state via game reducer (bypasses transport/master/playerID checks)
-    if (movesToReplay.length > 0) {
-      const reducer = CreateGameReducer({ game: gameEntry.game });
-      let state = client.getState();
-      for (const move of movesToReplay) {
-        const args = JSON.parse(move.move_args);
-        state = reducer(state, {
-          type: 'MAKE_MOVE',
-          payload: { type: move.move_type, args, playerID: move.player },
-        });
-      }
-      // UPDATE action: reducer returns action.state directly, master ignores (no payload)
-      client.store.dispatch({ type: 'UPDATE', state, deltalog: [] });
+    if (cfg.mode === 'hvc') {
+      const humanClient = makeClient(gameEntry.game, matchID, cfg.humanPlayer, cfg.humanCredentials);
+      const claudeClient = makeClient(gameEntry.game, matchID, cfg.claudePlayer, cfg.claudeCredentials);
+      clientRef.current = humanClient;
+      claudeClientRef.current = claudeClient;
+      botRef.current = makeBot(gameEntry, cfg, cfg.claudePlayer);
+      humanClient.start();
+      claudeClient.start();
+      humanClient.subscribe((s) => { if (s) setGameState({ ...s }); });
+
+    } else if (cfg.mode === 'hvh') {
+      const humanClient = makeClient(gameEntry.game, matchID, cfg.myPlayer, cfg.myCredentials);
+      clientRef.current = humanClient;
+      humanClient.start();
+      humanClient.subscribe((s) => { if (s) setGameState({ ...s }); });
+
+    } else if (cfg.mode === 'cvc') {
+      const client0 = makeClient(gameEntry.game, matchID, '0', cfg.credentials0);
+      const client1 = makeClient(gameEntry.game, matchID, '1', cfg.credentials1);
+      clientRef.current = client0;
+      claudeClientRef.current = client0;
+      claudeClient1Ref.current = client1;
+      botRef.current = makeBot(gameEntry, { model: cfg.model0, systemPrompt: cfg.systemPrompt0 }, '0');
+      bot1Ref.current = makeBot(gameEntry, { model: cfg.model1, systemPrompt: cfg.systemPrompt1 }, '1');
+      client0.start();
+      client1.start();
+      client0.subscribe((s) => { if (s) setGameState({ ...s }); });
     }
 
-    client.subscribe((state) => setGameState(state ? { ...state } : null));
-    const current = client.getState();
-    setGameState(current ? { ...current } : null);
     setLoading(false);
   };
 
@@ -87,61 +109,61 @@ export default function GameScreen() {
     let cancelled = false;
 
     const initialize = async () => {
-      // DB is the source of truth. Always check it first.
-      const res = await fetch(`/api/games/${matchID}`);
+      let cfg = null;
 
-      if (!res.ok) {
-        // Game not in DB yet — must be a fresh start with locationConfig
-        if (!locationConfig) { navigate('/'); return; }
-        await fetch('/api/games', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            matchId: matchID,
-            gameId: locationConfig.gameId,
-            humanPlayer: locationConfig.humanPlayer,
-            claudePlayer: locationConfig.claudePlayer,
-            model: locationConfig.model,
-            systemPrompt: locationConfig.systemPrompt,
-          }),
-        });
+      // Resolve config: location.state is canonical for fresh game; DB is fallback for resume
+      if (locationState?.mode) {
+        cfg = locationState;
+      } else {
+        const res = await fetch(`/api/games/${matchID}`);
+        if (!res.ok) { navigate('/'); return; }
+        const data = await res.json();
+        const g = data.game;
+        if (g.mode === 'hvc') {
+          cfg = {
+            mode: 'hvc', gameId: g.game_id,
+            humanPlayer: g.human_player, claudePlayer: g.claude_player,
+            model: g.model, systemPrompt: g.system_prompt,
+            humanCredentials: g.human_player === '0' ? g.player0_credentials : g.player1_credentials,
+            claudeCredentials: g.claude_player === '0' ? g.player0_credentials : g.player1_credentials,
+          };
+        } else if (g.mode === 'hvh') {
+          // Can't determine which player this browser is without session tracking;
+          // redirect to lobby so they can re-identify
+          navigate(`/lobby/${matchID}`);
+          return;
+        } else if (g.mode === 'cvc') {
+          cfg = {
+            mode: 'cvc', gameId: g.game_id,
+            model0: g.model, systemPrompt0: g.system_prompt,
+            model1: g.model, systemPrompt1: g.system_prompt,
+            credentials0: g.player0_credentials,
+            credentials1: g.player1_credentials,
+          };
+        }
+        const savedTranscript = data.moves.filter((m) => m.reasoning).map((m) => m.reasoning);
         if (cancelled) return;
-        setConfig(locationConfig);
-        initClient(locationConfig);
+        setConfig(cfg);
+        initClients(cfg, savedTranscript);
         return;
       }
 
-      const data = await res.json();
       if (cancelled) return;
-
-      const cfg = {
-        gameId: data.game.game_id,
-        humanPlayer: data.game.human_player,
-        claudePlayer: data.game.claude_player,
-        model: data.game.model,
-        systemPrompt: data.game.system_prompt,
-      };
       setConfig(cfg);
-
-      if (data.moves.length > 0) {
-        // Resume: replay saved moves
-        const savedTranscript = data.moves
-          .filter((m) => m.reasoning)
-          .map((m) => m.reasoning);
-        initClient(cfg, data.moves, savedTranscript);
-      } else {
-        // Fresh game (just created, no moves yet)
-        initClient(cfg);
-      }
+      initClients(cfg);
     };
 
     initialize().catch(() => navigate('/'));
 
     return () => {
       cancelled = true;
-      clientRef.current?.stop();
+      const toStop = new Set([clientRef.current, claudeClientRef.current, claudeClient1Ref.current].filter(Boolean));
+      toStop.forEach(c => c.stop());
       clientRef.current = null;
+      claudeClientRef.current = null;
+      claudeClient1Ref.current = null;
       botRef.current = null;
+      bot1Ref.current = null;
       steppingRef.current = false;
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -160,23 +182,35 @@ export default function GameScreen() {
   useEffect(() => {
     if (loading || !gameState || !config) return;
     const { ctx } = gameState;
-    if (ctx.gameover || ctx.currentPlayer !== config.claudePlayer) return;
+    if (ctx.gameover) return;
+    if (config.mode === 'hvh') return;
     if (steppingRef.current) return;
 
-    const actualState = clientRef.current?.getState();
-    if (!actualState || actualState.ctx.gameover) {
-      if (actualState) setGameState({ ...actualState });
-      return;
+    const currentPlayer = ctx.currentPlayer;
+
+    let stepClient, stepBot;
+
+    if (config.mode === 'hvc') {
+      if (currentPlayer !== config.claudePlayer) return;
+      stepClient = claudeClientRef.current;
+      stepBot = botRef.current;
+    } else if (config.mode === 'cvc') {
+      stepClient = currentPlayer === '0' ? claudeClientRef.current : claudeClient1Ref.current;
+      stepBot = currentPlayer === '0' ? botRef.current : bot1Ref.current;
     }
 
+    if (!stepClient || !stepBot) return;
+
     steppingRef.current = true;
-    Step(clientRef.current, botRef.current)
-      .catch(console.error)
-      .finally(() => {
-        steppingRef.current = false;
-        const fresh = clientRef.current?.getState();
-        if (fresh) setGameState({ ...fresh });
-      });
+    (async () => {
+      const state = stepClient.store.getState();
+      const pid = state.ctx.currentPlayer;
+      const { action } = await stepBot.play(state, pid);
+      if (action) {
+        const { type: moveName, args } = action.payload;
+        stepClient.moves[moveName](...(args ?? []));
+      }
+    })().catch(console.error).finally(() => { steppingRef.current = false; });
   }, [gameState, config, loading]);
 
   if (loading) return <div style={{ padding: '2rem', fontFamily: 'sans-serif' }}>Loading…</div>;
@@ -184,30 +218,36 @@ export default function GameScreen() {
 
   const gameEntry = GAMES[config.gameId];
   const { G, ctx } = gameState;
-  const isClaudeTurn = ctx.currentPlayer === config.claudePlayer && !ctx.gameover;
   const { Board } = gameEntry;
 
-  // Wrap human moves to persist them
+  const isMyTurn = () => {
+    if (ctx.gameover) return false;
+    if (config.mode === 'hvc') return ctx.currentPlayer === config.humanPlayer;
+    if (config.mode === 'hvh') return ctx.currentPlayer === config.myPlayer;
+    return false; // cvc: no human turn
+  };
+
+  // Wrap human moves to persist them (only for hvc and hvh)
   const moves = {};
-  for (const [name, fn] of Object.entries(clientRef.current.moves)) {
-    moves[name] = (...args) => {
-      saveMoveRef.current(config.humanPlayer, name, args, null);
-      return fn(...args);
-    };
+  if (config.mode !== 'cvc' && clientRef.current?.moves) {
+    for (const [name, fn] of Object.entries(clientRef.current.moves)) {
+      moves[name] = (...args) => {
+        const player = config.mode === 'hvc' ? config.humanPlayer : config.myPlayer;
+        saveMoveRef.current(player, name, args, null);
+        return fn(...args);
+      };
+    }
   }
 
+  // Transcript header label
+  const transcriptLabel = config.mode === 'cvc'
+    ? 'Claude A vs Claude B'
+    : `Claude (${SYMBOLS[config.claudePlayer ?? config.myPlayer === '0' ? '1' : '0']})`;
+
   return (
-    <div
-      style={{
-        display: 'flex',
-        gap: '3rem',
-        padding: '2rem',
-        fontFamily: 'sans-serif',
-        alignItems: 'flex-start',
-      }}
-    >
+    <div style={{ display: 'flex', gap: '3rem', padding: '2rem', fontFamily: 'sans-serif', alignItems: 'flex-start' }}>
       <div>
-        <Board G={G} ctx={ctx} moves={moves} isActive={!isClaudeTurn && !ctx.gameover} />
+        <Board G={G} ctx={ctx} moves={moves} isActive={isMyTurn()} waitingMessage={config.mode !== 'hvh' ? 'Claude is thinking…' : 'Waiting for opponent…'} />
         {ctx.gameover && (
           <div style={{ textAlign: 'center', marginTop: '1rem' }}>
             <button
@@ -220,11 +260,13 @@ export default function GameScreen() {
         )}
       </div>
 
-      <GameTranscript
-        transcript={transcript}
-        claudeSymbol={SYMBOLS[config.claudePlayer]}
-        pendingReasoning={pendingReasoning}
-      />
+      {config.mode !== 'hvh' && (
+        <GameTranscript
+          transcript={transcript}
+          claudeSymbol={config.mode === 'cvc' ? 'A/B' : SYMBOLS[config.claudePlayer]}
+          pendingReasoning={pendingReasoning}
+        />
+      )}
     </div>
   );
 }

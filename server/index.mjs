@@ -6,7 +6,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import Anthropic from '@anthropic-ai/sdk';
 import { getDb } from './db/db.mjs';
-import { createGame, getGame, addMove, updateGameStatus } from './db/queries.mjs';
+import { createGame, getGame, addMove, updateGameStatus, updatePlayerCredentials } from './db/queries.mjs';
 
 const require = createRequire(import.meta.url);
 const koaStatic = require('koa-static');
@@ -19,7 +19,7 @@ getDb(); // init DB on startup
 
 const server = Server({
   games: [TicTacToe, Nim],
-  origins: isDev ? ['http://localhost:3000'] : false,
+  origins: isDev ? true : false,
 });
 
 if (!isDev) {
@@ -127,9 +127,17 @@ server.router.post('/api/claude-move', koaBody(), async (ctx) => {
 
 // Game persistence routes
 server.router.post('/api/games', koaBody(), (ctx) => {
-  const { matchId, gameId, humanPlayer, claudePlayer, model, systemPrompt } = ctx.request.body;
-  createGame({ matchId, gameId, humanPlayer, claudePlayer, model, systemPrompt });
+  const { matchId, gameId, mode, humanPlayer, claudePlayer, model, systemPrompt,
+          player0Credentials, player1Credentials } = ctx.request.body;
+  createGame({ matchId, gameId, mode, humanPlayer, claudePlayer, model, systemPrompt,
+               player0Credentials, player1Credentials });
   ctx.status = 201;
+  ctx.body = { ok: true };
+});
+
+server.router.patch('/api/games/:matchId/players', koaBody(), (ctx) => {
+  const { player0Credentials, player1Credentials } = ctx.request.body;
+  updatePlayerCredentials(ctx.params.matchId, player0Credentials, player1Credentials);
   ctx.body = { ok: true };
 });
 

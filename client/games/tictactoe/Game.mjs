@@ -18,6 +18,7 @@ function IsDraw(cells) {
 }
 
 export const TicTacToe = {
+  name: 'tictactoe',
   setup: () => ({ cells: Array(9).fill(null) }),
 
   turn: {

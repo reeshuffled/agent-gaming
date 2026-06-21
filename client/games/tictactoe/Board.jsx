@@ -19,7 +19,7 @@ const disabledCellStyle = {
   color: '#888',
 };
 
-export function TicTacToeBoard({ ctx, G, moves, isActive }) {
+export function TicTacToeBoard({ ctx, G, moves, isActive, waitingMessage = 'Waiting for opponent…' }) {
   const onClick = (id) => {
     if (isActive) moves.clickCell(id);
   };
@@ -70,7 +70,7 @@ export function TicTacToeBoard({ ctx, G, moves, isActive }) {
       )}
       {!winner && (
         <div style={{ marginTop: '1rem', fontSize: '1rem', color: '#555' }}>
-          {isActive ? status : 'Claude is thinking…'}
+          {isActive ? status : waitingMessage}
         </div>
       )}
     </div>
