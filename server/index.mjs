@@ -1,9 +1,12 @@
 import { Server } from 'boardgame.io/dist/cjs/server.js';
 import { createRequire } from 'module';
 import { TicTacToe } from '../client/games/tictactoe/Game.mjs';
+import { Nim } from '../client/games/nim/Game.mjs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import Anthropic from '@anthropic-ai/sdk';
+import { getDb } from './db/db.mjs';
+import { createGame, getGame, addMove, updateGameStatus } from './db/queries.mjs';
 
 const require = createRequire(import.meta.url);
 const koaStatic = require('koa-static');
@@ -12,8 +15,10 @@ const koaBody = require('koa-body');
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const isDev = process.env.NODE_ENV !== 'production';
 
+getDb(); // init DB on startup
+
 const server = Server({
-  games: [TicTacToe],
+  games: [TicTacToe, Nim],
   origins: isDev ? ['http://localhost:3000'] : false,
 });
 
@@ -118,6 +123,33 @@ server.router.post('/api/claude-move', koaBody(), async (ctx) => {
     try { write({ type: 'error', error: err.message }); } catch (_) {}
     ctx.res.end();
   }
+});
+
+// Game persistence routes
+server.router.post('/api/games', koaBody(), (ctx) => {
+  const { matchId, gameId, humanPlayer, claudePlayer, model, systemPrompt } = ctx.request.body;
+  createGame({ matchId, gameId, humanPlayer, claudePlayer, model, systemPrompt });
+  ctx.status = 201;
+  ctx.body = { ok: true };
+});
+
+server.router.get('/api/games/:matchId', (ctx) => {
+  const data = getGame(ctx.params.matchId);
+  if (!data) { ctx.status = 404; ctx.body = { error: 'not found' }; return; }
+  ctx.body = data;
+});
+
+server.router.post('/api/games/:matchId/moves', koaBody(), (ctx) => {
+  const { player, moveType, moveArgs, reasoning } = ctx.request.body;
+  addMove({ matchId: ctx.params.matchId, player, moveType, moveArgs, reasoning });
+  ctx.status = 201;
+  ctx.body = { ok: true };
+});
+
+server.router.patch('/api/games/:matchId', koaBody(), (ctx) => {
+  const { status } = ctx.request.body;
+  updateGameStatus(ctx.params.matchId, status);
+  ctx.body = { ok: true };
 });
 
 server.run(8000, () => {

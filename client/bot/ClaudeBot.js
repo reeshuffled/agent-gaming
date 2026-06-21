@@ -19,13 +19,14 @@ export const PERSONA_PRESETS = {
 };
 
 export class ClaudeBot extends Bot {
-  constructor({ enumerate, serializeState, model, systemPrompt, onReasoningChunk, onReasoning }) {
+  constructor({ enumerate, serializeState, model, systemPrompt, onReasoningChunk, onReasoning, onMove }) {
     super({ enumerate });
     this.serializeState = serializeState;
     this.model = model;
     this.systemPrompt = systemPrompt;
     this.onReasoningChunk = onReasoningChunk || (() => {});
     this.onReasoning = onReasoning || (() => {});
+    this.onMove = onMove || (() => {});
     this.conversationHistory = [];
   }
 
@@ -61,16 +62,21 @@ export class ClaudeBot extends Bot {
         role: 'user',
         content: [{ type: 'tool_result', tool_use_id: retry.tool_use_id, content: 'Move accepted.' }],
       });
-      this.onReasoning(retry.reasoning || '[Fallback to first legal move]');
-      return { action: legalMoves[idx] };
+      const retryReasoning = retry.reasoning || '[Fallback to first legal move]';
+      const retryAction = legalMoves[idx];
+      this.onMove(retryAction.payload.type, retryAction.payload.args, retryReasoning);
+      this.onReasoning(retryReasoning);
+      return { action: retryAction };
     }
 
     this.conversationHistory.push({
       role: 'user',
       content: [{ type: 'tool_result', tool_use_id: first.tool_use_id, content: 'Move accepted.' }],
     });
+    const chosenAction = legalMoves[first.cell_index];
+    this.onMove(chosenAction.payload.type, chosenAction.payload.args, first.reasoning);
     this.onReasoning(first.reasoning);
-    return { action: legalMoves[first.cell_index] };
+    return { action: chosenAction };
   }
 
   _valid(index, moves) {
