@@ -89,7 +89,7 @@ export default function GameScreen() {
   const gameEntry = GAMES[config.gameId];
   const { G, ctx } = gameState;
   const isClaudeTurn = ctx.currentPlayer === config.claudePlayer && !ctx.gameover;
-  const moves = { clickCell: (id) => clientRef.current.moves.clickCell(id) };
+  const moves = clientRef.current.moves;
   const { Board } = gameEntry;
 
   return (
@@ -104,11 +104,6 @@ export default function GameScreen() {
     >
       <div>
         <Board G={G} ctx={ctx} moves={moves} isActive={!isClaudeTurn && !ctx.gameover} />
-        {isClaudeTurn && (
-          <p style={{ textAlign: 'center', color: '#888', marginTop: '0.5rem', fontSize: '0.875rem' }}>
-            Claude is thinking…
-          </p>
-        )}
         {ctx.gameover && (
           <div style={{ textAlign: 'center', marginTop: '1rem' }}>
             <button

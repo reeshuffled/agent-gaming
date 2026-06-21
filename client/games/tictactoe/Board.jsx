@@ -70,7 +70,7 @@ export function TicTacToeBoard({ ctx, G, moves, isActive }) {
       )}
       {!winner && (
         <div style={{ marginTop: '1rem', fontSize: '1rem', color: '#555' }}>
-          {status}{!isActive && ' (waiting for your turn)'}
+          {isActive ? status : 'Claude is thinking…'}
         </div>
       )}
     </div>
