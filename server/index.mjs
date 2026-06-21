@@ -46,34 +46,71 @@ const MAKE_MOVE_TOOL = {
 server.router.post('/api/claude-move', koaBody(), async (ctx) => {
   const { model, systemPrompt, messages } = ctx.request.body;
 
+  ctx.respond = false;
+  ctx.res.writeHead(200, {
+    'Content-Type': 'application/x-ndjson',
+    'Cache-Control': 'no-cache',
+    'X-Accel-Buffering': 'no',
+  });
+
+  const write = (obj) => ctx.res.write(JSON.stringify(obj) + '\n');
+
   try {
-    const response = await anthropic.messages.create({
+    let accumulatedJson = '';
+    let lastReasoningLength = 0;
+
+    const stream = anthropic.messages.stream({
       model,
       max_tokens: 1024,
-      system: systemPrompt,
+      system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
       tools: [MAKE_MOVE_TOOL],
       tool_choice: { type: 'any' },
       messages,
     });
 
-    const toolUse = response.content.find((c) => c.type === 'tool_use');
+    for await (const event of stream) {
+      if (event.type === 'content_block_delta' && event.delta.type === 'input_json_delta') {
+        accumulatedJson += event.delta.partial_json;
 
+        // Extract reasoning as it streams (handles partial string with no closing quote)
+        const match = accumulatedJson.match(/"reasoning"\s*:\s*"((?:[^"\\]|\\.)*)(?:"|$)/);
+        if (match) {
+          const raw = match[1]
+            .replace(/\\"/g, '"')
+            .replace(/\\\\/g, '\\')
+            .replace(/\\n/g, '\n')
+            .replace(/\\t/g, '\t');
+          if (raw.length > lastReasoningLength) {
+            write({ type: 'chunk', text: raw.slice(lastReasoningLength) });
+            lastReasoningLength = raw.length;
+          }
+        }
+      }
+    }
+
+    const response = await stream.finalMessage();
+    const { cache_read_input_tokens, cache_creation_input_tokens } = response.usage;
+    console.log(`cache: read=${cache_read_input_tokens} write=${cache_creation_input_tokens}`);
+
+    const toolUse = response.content.find((c) => c.type === 'tool_use');
     if (!toolUse) {
-      ctx.status = 500;
-      ctx.body = { error: 'No tool call in Claude response' };
+      write({ type: 'error', error: 'No tool call in Claude response' });
+      ctx.res.end();
       return;
     }
 
-    ctx.body = {
+    write({
+      type: 'done',
       cell_index: toolUse.input.cell_index,
       reasoning: toolUse.input.reasoning,
       tool_use_id: toolUse.id,
       assistant_content: response.content,
-    };
+    });
+    ctx.res.end();
   } catch (err) {
     console.error('Claude API error:', err.message);
-    ctx.status = 500;
-    ctx.body = { error: err.message };
+    try { write({ type: 'error', error: err.message }); } catch (_) {}
+    ctx.res.end();
   }
 });
 

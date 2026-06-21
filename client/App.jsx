@@ -14,18 +14,26 @@ export default function App() {
   const [config, setConfig] = useState(null);
   const [gameState, setGameState] = useState(null);
   const [transcript, setTranscript] = useState([]);
+  const [pendingReasoning, setPendingReasoning] = useState(null);
 
   const clientRef = useRef(null);
   const botRef = useRef(null);
   const steppingRef = useRef(false);
 
+  const onReasoningChunkRef = useRef(null);
+  onReasoningChunkRef.current = (chunk) => setPendingReasoning((prev) => (prev ?? '') + chunk);
+
   // Stable ref so ClaudeBot always calls the latest setter
   const onReasoningRef = useRef(null);
-  onReasoningRef.current = (text) => setTranscript((prev) => [...prev, text]);
+  onReasoningRef.current = (text) => {
+    setTranscript((prev) => [...prev, text]);
+    setPendingReasoning(null);
+  };
 
   const startGame = useCallback((cfg) => {
     setConfig(cfg);
     setTranscript([]);
+    setPendingReasoning(null);
 
     const client = Client({ game: TicTacToe, playerID: cfg.humanPlayer });
     client.start();
@@ -36,6 +44,7 @@ export default function App() {
       serializeState,
       model: cfg.model,
       systemPrompt: cfg.systemPrompt,
+      onReasoningChunk: (chunk) => onReasoningChunkRef.current(chunk),
       onReasoning: (text) => onReasoningRef.current(text),
     });
     botRef.current = bot;
@@ -50,10 +59,22 @@ export default function App() {
     if (ctx.gameover || ctx.currentPlayer !== config.claudePlayer) return;
     if (steppingRef.current) return;
 
+    // Authoritative check: client may have gameover that React hasn't seen yet
+    const actualState = clientRef.current?.getState();
+    if (!actualState || actualState.ctx.gameover) {
+      if (actualState) setGameState({ ...actualState });
+      return;
+    }
+
     steppingRef.current = true;
     Step(clientRef.current, botRef.current)
       .catch(console.error)
-      .finally(() => { steppingRef.current = false; });
+      .finally(() => {
+        steppingRef.current = false;
+        // Sync React state to catch any missed subscriber updates (e.g. gameover)
+        const fresh = clientRef.current?.getState();
+        if (fresh) setGameState({ ...fresh });
+      });
   }, [gameState, config, phase]);
 
   const resetGame = () => {
@@ -118,6 +139,7 @@ export default function App() {
       <GameTranscript
         transcript={transcript}
         claudeSymbol={SYMBOLS[config.claudePlayer]}
+        pendingReasoning={pendingReasoning}
       />
     </div>
   );

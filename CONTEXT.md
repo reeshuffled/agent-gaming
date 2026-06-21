@@ -3,10 +3,10 @@
 ## Terms
 
 ### ClaudeBot
-A boardgame.io `Bot` subclass that delegates move selection to the Claude API. Constructed with `enumerate` (legal moves), `serializeState` (board → prompt string), `model` (Claude model ID), `systemPrompt` (persona), and `onReasoning` (callback for displaying reasoning in the UI). Maintains conversation history across turns as an instance field.
+A boardgame.io `Bot` subclass that delegates move selection to the Claude API. Constructed with `enumerate` (legal moves), `serializeState` (board → prompt string), `model` (Claude model ID), `systemPrompt` (persona), `onReasoningChunk` (callback fired per streaming token during Claude's thinking), and `onReasoning` (callback fired with complete reasoning string on move completion). Maintains conversation history across turns as an instance field.
 
 ### Game Transcript
-The sidebar UI element that accumulates Claude's reasoning for every move in the current game. Displays move number + reasoning string per turn. Stored in React state above the boardgame.io `Client` component; populated via the `onReasoning` callback on `ClaudeBot`.
+The sidebar UI element that accumulates Claude's reasoning for every move in the current game. Displays move number + reasoning string per turn. While Claude is deciding, shows a "Claude is thinking..." pending entry that accumulates streaming reasoning chunks in place; finalizes when the move lands. Stored in React state above the boardgame.io `Client` component; populated via `onReasoningChunk` (per chunk) and `onReasoning` (on completion) callbacks on `ClaudeBot`.
 
 ### Legal Moves
 The output of `game.ai.enumerate(G, ctx, playerID)` — the set of moves Claude may choose from on a given turn. Passed to the Claude API call as the allowed options for the `make_move` tool. If Claude returns an index outside this set, the bot retries once before falling back to the first legal move.

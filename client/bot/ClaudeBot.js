@@ -19,11 +19,12 @@ export const PERSONA_PRESETS = {
 };
 
 export class ClaudeBot extends Bot {
-  constructor({ enumerate, serializeState, model, systemPrompt, onReasoning }) {
+  constructor({ enumerate, serializeState, model, systemPrompt, onReasoningChunk, onReasoning }) {
     super({ enumerate });
     this.serializeState = serializeState;
     this.model = model;
     this.systemPrompt = systemPrompt;
+    this.onReasoningChunk = onReasoningChunk || (() => {});
     this.onReasoning = onReasoning || (() => {});
     this.conversationHistory = [];
   }
@@ -92,6 +93,33 @@ export class ClaudeBot extends Bot {
       throw new Error(`Claude proxy ${response.status}: ${err}`);
     }
 
-    return response.json();
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let result = null;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const event = JSON.parse(line);
+        if (event.type === 'chunk') {
+          this.onReasoningChunk(event.text);
+        } else if (event.type === 'done') {
+          result = event;
+        } else if (event.type === 'error') {
+          throw new Error(`Claude proxy error: ${event.error}`);
+        }
+      }
+    }
+
+    if (!result) throw new Error('Stream ended without result');
+    return result;
   }
 }
